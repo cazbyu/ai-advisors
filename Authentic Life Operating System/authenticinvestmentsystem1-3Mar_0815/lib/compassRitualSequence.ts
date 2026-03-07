@@ -1,0 +1,240 @@
+/**
+ * Compass Ritual Sequence — Animation Definitions
+ *
+ * Pure data module mapping weekly alignment steps to compass spindle positions
+ * and animation timing. Used by CompassRitualController to orchestrate the
+ * visual heartbeat of each ritual.
+ */
+
+// ============================================
+// TYPES
+// ============================================
+
+export interface RitualStepConfig {
+  /** Gold spindle target angle (cardinal direction) */
+  goldAngle: number;
+  /** Silver spindle default position when entering this step */
+  silverAngle: number;
+  /** Whether silver spindle should follow individual items (roles, zones, goals) */
+  silverFollowsItems: boolean;
+  /** Whether the compass should fade out at this step */
+  fadeOut: boolean;
+}
+
+// ============================================
+// STEP SEQUENCE
+// ============================================
+
+/** Maps each weekly alignment step to its compass configuration */
+export const RITUAL_STEP_SEQUENCE: Record<string, RitualStepConfig> = {
+  step_1: { goldAngle: 0,   silverAngle: 0,   silverFollowsItems: false, fadeOut: false }, // North Star (0° North)
+  step_2: { goldAngle: 270, silverAngle: 270, silverFollowsItems: true,  fadeOut: false }, // Roles (270° West)
+  step_3: { goldAngle: 90,  silverAngle: 90,  silverFollowsItems: true,  fadeOut: false }, // Wellness (90° East)
+  step_4: { goldAngle: 180, silverAngle: 180, silverFollowsItems: true,  fadeOut: false }, // Goals (180° South)
+  step_5: { goldAngle: 0,   silverAngle: 0,   silverFollowsItems: false, fadeOut: false }, // Alignment Check (sweep)
+  step_6: { goldAngle: 0,   silverAngle: 0,   silverFollowsItems: false, fadeOut: true  }, // Tactical Deployment (fade)
+};
+
+/** Step keys indexed by step number (0-5) */
+export const STEP_KEYS = ['step_1', 'step_2', 'step_3', 'step_4', 'step_5', 'step_6'] as const;
+
+/**
+ * Step 5 (Alignment Check) sweep sequence.
+ * Gold spindle rotates through all 4 cardinal points as power questions are answered.
+ * N (North Star) → W (Roles) → E (Wellness) → S (Goals)
+ */
+export const ALIGNMENT_SWEEP_ANGLES = [0, 270, 90, 180];
+
+// ============================================
+// IGNITION ANIMATION CONFIG
+// ============================================
+
+/** Configuration for the opening ignition ceremony animation */
+export const IGNITION_CONFIG = {
+  /** Gold spindle total spin (1 full clockwise rotation) */
+  goldSpinDegrees: 360,
+  /** Silver spindle total spin (1.5 counter-clockwise rotations) */
+  silverSpinDegrees: -540,
+  /** Duration of the free-spin phase in ms */
+  spinDuration: 4000,
+  /** Duration of the deceleration phase in ms */
+  decelerateDuration: 2000,
+  /** Final angle after deceleration (North) */
+  finalAngle: 0,
+};
+
+// ============================================
+// TIMING CONSTANTS
+// ============================================
+
+/** Duration for spindle transitions between steps (ms) */
+export const TRANSITION_DURATION = 400;
+
+/** Duration for full-screen → corner shrink animation (ms) */
+export const SHRINK_DURATION = 600;
+
+/** Duration for Step 6 fade-out (ms) */
+export const FADE_DURATION = 500;
+
+/** Delay after ignition before shrink begins (ms) */
+export const POST_IGNITION_DELAY = 300;
+
+/** Extra hold time after ignition before compass shrinks to corner (ms) */
+export const POST_IGNITION_DOCK_DELAY = 1000;
+
+// ============================================
+// INTRO SEQUENCE CONFIG
+// ============================================
+
+/** Individual intro message configuration */
+export interface IntroMessage {
+  /** Display text */
+  text: string;
+  /** Start time from sequence begin (ms) */
+  startMs: number;
+  /** Duration the text is fully visible (ms) */
+  holdMs: number;
+  /** Whether this message only shows when user has no identity */
+  noIdentityOnly?: boolean;
+  /** Whether this message should appear as the "hero prompt" (lower position, red text) */
+  isHeroPrompt?: boolean;
+}
+
+/** Fade-in duration for each intro message (ms) */
+export const INTRO_FADE_IN = 300;
+
+/** Fade-out duration for each intro message (ms) */
+export const INTRO_FADE_OUT = 300;
+
+/** Gap between fade-out of one message and fade-in of next (ms) */
+export const INTRO_GAP = 200;
+
+/** The intro text sequence — times are absolute from sequence start */
+export const INTRO_MESSAGES: IntroMessage[] = [
+  { text: 'Step 1: Touch Your Star',                                                             startMs: 0,     holdMs: 2200 },
+  { text: 'Who Am I?',                                                                           startMs: 3000,  holdMs: 2000 },
+];
+
+/** Duration of backdrop fade-out after last intro message (ms) */
+export const INTRO_BACKDROP_FADE = 500;
+
+// ============================================
+// SIZE CONSTANTS
+// ============================================
+
+/** Compass size during full-screen ignition (px) */
+export const FULL_SIZE = 240;
+
+/** Compass size when docked in corner (px) */
+export const CORNER_SIZE = 72;
+
+/** Padding from screen edge when docked (px) */
+export const CORNER_PADDING = 16;
+
+/** Horizontal offset when docked — aligns with step content padding (px) */
+export const CORNER_PADDING_X = 16;
+
+/** Vertical offset when docked — below navigation header, aligns with step header row (px) */
+export const CORNER_PADDING_Y = 16;
+
+// ============================================
+// STEP TRANSITION CONFIG (inter-step overlays)
+// ============================================
+
+/** Data available for building dynamic transition messages */
+export interface StepTransitionData {
+  identity?: string;
+  hasMission?: boolean;
+  hasVision?: boolean;
+  hasValues?: boolean;
+}
+
+/** Configuration for the transition overlay between two steps */
+export interface StepTransitionConfig {
+  /** Generate the overlay message based on what the user accomplished */
+  getMessage: (data: StepTransitionData) => string;
+  /** Gold spindle target angle during transition spin */
+  transitionGoldAngle: number;
+  /** Silver spindle target angle during transition spin */
+  transitionSilverAngle: number;
+}
+
+/** Maps each step transition (fromIndex_to_toIndex) to its config */
+export const STEP_TRANSITIONS: Record<string, StepTransitionConfig> = {
+  '0_to_1': {
+    getMessage: (data) => {
+      const parts: string[] = [];
+      if (data.hasMission || data.hasVision) {
+        const items = [
+          data.hasMission && 'a Mission Statement',
+          data.hasVision && 'a Vision',
+        ].filter(Boolean);
+        parts.push(`You've created ${items.join(' and ')}!`);
+      }
+      parts.push("Now let's focus on aligning the roles in your life.");
+      return parts.join(' ');
+    },
+    transitionGoldAngle: 270,
+    transitionSilverAngle: 270,
+  },
+  '1_to_2': {
+    getMessage: () => "Time to check in on your wellness.",
+    transitionGoldAngle: 90,
+    transitionSilverAngle: 90,
+  },
+  '2_to_3': {
+    getMessage: () => "Let's review your goals and campaigns.",
+    transitionGoldAngle: 180,
+    transitionSilverAngle: 180,
+  },
+  '3_to_4': {
+    getMessage: () => "Time for an alignment check.",
+    transitionGoldAngle: 0,
+    transitionSilverAngle: 0,
+  },
+  '4_to_5': {
+    getMessage: () => "Time to deploy your week.",
+    transitionGoldAngle: 0,
+    transitionSilverAngle: 0,
+  },
+};
+
+/** Fade-in duration for inter-step transition text (ms) */
+export const STEP_TRANSITION_FADE_IN = 400;
+/** Hold time for inter-step transition text (ms) */
+export const STEP_TRANSITION_HOLD = 2500;
+/** Fade-out duration for inter-step transition text (ms) */
+export const STEP_TRANSITION_FADE_OUT = 400;
+/** Backdrop fade-out duration after inter-step text (ms) */
+export const STEP_TRANSITION_BACKDROP_FADE = 500;
+
+// ============================================
+// HELPERS
+// ============================================
+
+/** Get the ritual step config for a given step index (0-5) */
+export function getStepConfig(stepIndex: number): RitualStepConfig {
+  const key = STEP_KEYS[stepIndex];
+  return RITUAL_STEP_SEQUENCE[key] ?? RITUAL_STEP_SEQUENCE.step_1;
+}
+
+/**
+ * Calculate silver spindle angle for a sub-item within a quadrant.
+ * Distributes items evenly across the quadrant range.
+ *
+ * @param baseAngle - The cardinal direction center (e.g., 270 for West)
+ * @param itemIndex - Index of the current item (0-based)
+ * @param totalItems - Total number of items
+ * @param spread - Total angular spread (default 90° = full quadrant)
+ */
+export function calculateItemAngle(
+  baseAngle: number,
+  itemIndex: number,
+  totalItems: number,
+  spread: number = 90,
+): number {
+  if (totalItems <= 1) return baseAngle;
+  const startAngle = baseAngle - spread / 2;
+  const step = spread / (totalItems - 1);
+  return ((startAngle + step * itemIndex) % 360 + 360) % 360;
+}

@@ -1,0 +1,1173 @@
+import React, { useState, useEffect } from 'react';
+import { View, Text, StyleSheet, ScrollView, TouchableOpacity, Modal, Alert, ActivityIndicator, Image, Linking, TextInput, Platform } from 'react-native';
+import { X, Play, Edit, Trash2, Paperclip } from 'lucide-react-native';
+import Autolink from 'react-native-autolink';
+import { getSupabaseClient } from '@/lib/supabase';
+import { fetchAttachmentsForNotes, uploadNoteAttachment, saveNoteAttachmentMetadata } from '@/lib/noteAttachmentUtils';
+import ImageViewerModal from '../reflections/ImageViewerModal';
+import FollowThroughButtonBar from '../followThrough/FollowThroughButtonBar';
+import AssociatedItemsList, { AssociatedItem } from '../followThrough/AssociatedItemsList';
+import { fetchAssociatedItems } from '@/lib/followThroughUtils';
+import TaskEventForm from '../tasks/TaskEventForm';
+import ParentItemInfo from '../followThrough/ParentItemInfo';
+import * as DocumentPicker from 'expo-document-picker';
+
+const depositIdeaImage = require('@/assets/images/deposit-idea.png');
+
+interface DepositIdea {
+  id: string;
+  title: string;
+  is_active?: boolean;
+  created_at?: string;
+  activated_at?: string;
+  archived?: boolean;
+  follow_up?: boolean;
+  activated_task_id?: string;
+  parent_id?: string;
+  parent_type?: string;
+  roles?: Array<{id: string; label: string; color?: string}>;
+  domains?: Array<{id: string; name: string; color?: string}>;
+  goals?: Array<{id: string; title: string}>;
+  keyRelationships?: Array<{id: string; name: string}>;
+  has_notes?: boolean;
+}
+
+interface DepositIdeaDetailModalProps {
+  visible: boolean;
+  depositIdea: DepositIdea | null;
+  onClose: () => void;
+  onDelete: (depositIdea: DepositIdea) => void;
+  onActivate: (depositIdea: DepositIdea) => void;
+  onEdit?: (depositIdea: DepositIdea) => void;
+  onRefreshAssociatedItems?: () => void;
+  onItemPress?: (item: AssociatedItem) => void;
+}
+
+interface Note {
+  id: string;
+  content: string;
+  created_at: string;
+}
+
+export function DepositIdeaDetailModal({
+  visible,
+  depositIdea,
+  onClose,
+  onDelete,
+  onActivate,
+  onEdit,
+  onRefreshAssociatedItems,
+  onItemPress
+}: DepositIdeaDetailModalProps) {
+  const [isEditMode, setIsEditMode] = useState(false);
+  const [notes, setNotes] = useState<Note[]>([]);
+  const [loadingNotes, setLoadingNotes] = useState(false);
+  const [noteAttachmentsMap, setNoteAttachmentsMap] = useState<Map<string, any[]>>(new Map());
+  const [imageViewerVisible, setImageViewerVisible] = useState(false);
+  const [selectedImages, setSelectedImages] = useState<any[]>([]);
+  const [selectedImageIndex, setSelectedImageIndex] = useState(0);
+  const [allAttachments, setAllAttachments] = useState<any[]>([]);
+  const [associatedItems, setAssociatedItems] = useState<AssociatedItem[]>([]);
+  const [loadingAssociatedItems, setLoadingAssociatedItems] = useState(false);
+  const [followThroughFormVisible, setFollowThroughFormVisible] = useState(false);
+  const [followThroughPreSelectedType, setFollowThroughPreSelectedType] = useState<'task' | 'event' | 'rose' | 'thorn' | 'depositIdea' | 'reflection'>('task');
+  const [roles, setRoles] = useState<any[]>([]);
+  const [domains, setDomains] = useState<any[]>([]);
+  const [keyRelationships, setKeyRelationships] = useState<any[]>([]);
+  const [loadingMetadata, setLoadingMetadata] = useState(false);
+  const [isActivating, setIsActivating] = useState(false);
+  const [addNoteModalVisible, setAddNoteModalVisible] = useState(false);
+  const [newNoteText, setNewNoteText] = useState('');
+  const [savingNote, setSavingNote] = useState(false);
+  const [noteAttachments, setNoteAttachments] = useState<any[]>([]);
+
+  useEffect(() => {
+    if (visible && depositIdea?.id) {
+      fetchNotes();
+      loadAssociatedItems();
+      fetchMetadata();
+      setIsEditMode(false);
+    }
+  }, [visible, depositIdea?.id]);
+
+  useEffect(() => {
+    const attachments: any[] = [];
+    noteAttachmentsMap.forEach((noteAttachments) => {
+      attachments.push(...noteAttachments);
+    });
+    setAllAttachments(attachments);
+  }, [noteAttachmentsMap]);
+
+  const fetchNotes = async () => {
+    if (!depositIdea?.id) return;
+    setLoadingNotes(true);
+    try {
+      const supabase = getSupabaseClient();
+      const { data, error } = await supabase
+        .from('0008-ap-universal-notes-join')
+        .select(`
+          note:0008-ap-notes(
+            id,
+            content,
+            created_at
+          )
+        `)
+        .eq('parent_id', depositIdea.id)
+        .eq('parent_type', 'depositIdea')
+        .order('created_at', { ascending: false });
+
+      if (error) throw error;
+
+      const fetchedNotes = (data || [])
+        .map((item: any) => item.note)
+        .filter(Boolean)
+        .sort((a: Note, b: Note) =>
+          new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
+        );
+
+      setNotes(fetchedNotes);
+
+      if (fetchedNotes.length > 0) {
+        const noteIds = fetchedNotes.map((n: Note) => n.id);
+        const attachmentsData = await fetchAttachmentsForNotes(noteIds);
+        setNoteAttachmentsMap(attachmentsData);
+      }
+    } catch (error) {
+      console.error('Error fetching notes:', error);
+    } finally {
+      setLoadingNotes(false);
+    }
+  };
+
+  const loadAssociatedItems = async () => {
+    if (!depositIdea?.id) return;
+    setLoadingAssociatedItems(true);
+    try {
+      const items = await fetchAssociatedItems(depositIdea.id, 'depositIdea');
+      setAssociatedItems(items);
+    } catch (error) {
+      console.error('Error loading associated items:', error);
+    } finally {
+      setLoadingAssociatedItems(false);
+    }
+  };
+
+  const fetchMetadata = async () => {
+    if (!depositIdea?.id) return;
+    setLoadingMetadata(true);
+    try {
+      const supabase = getSupabaseClient();
+      const [rolesRes, domainsRes, krRes] = await Promise.all([
+        supabase
+          .from('0008-ap-universal-roles-join')
+          .select('role:0008-ap-roles(id, label, color)')
+          .eq('parent_id', depositIdea.id)
+          .eq('parent_type', 'depositIdea'),
+        supabase
+          .from('0008-ap-universal-domains-join')
+          .select('domain:0008-ap-domains(id, name)')
+          .eq('parent_id', depositIdea.id)
+          .eq('parent_type', 'depositIdea'),
+        supabase
+          .from('0008-ap-universal-key-relationships-join')
+          .select('key_relationship:0008-ap-key-relationships(id, name)')
+          .eq('parent_id', depositIdea.id)
+          .eq('parent_type', 'depositIdea')
+      ]);
+
+      if (rolesRes.data) {
+        setRoles(rolesRes.data.map((r: any) => r.role).filter(Boolean));
+      }
+      if (domainsRes.data) {
+        setDomains(domainsRes.data.map((d: any) => d.domain).filter(Boolean));
+      }
+      if (krRes.data) {
+        setKeyRelationships(krRes.data.map((kr: any) => kr.key_relationship).filter(Boolean));
+      }
+    } catch (error) {
+      console.error('Error fetching metadata:', error);
+    } finally {
+      setLoadingMetadata(false);
+    }
+  };
+
+  const handleDelete = () => {
+    Alert.alert(
+      'Delete Deposit Idea',
+      'Are you sure you want to delete this deposit idea?',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Delete',
+          style: 'destructive',
+          onPress: () => {
+            if (depositIdea) {
+              onDelete(depositIdea);
+              onClose();
+            }
+          },
+        },
+      ]
+    );
+  };
+
+  const handleActivate = () => {
+    if (!depositIdea) return;
+
+    // Trigger activation workflow - open TaskEventForm to create the activating task
+    setIsActivating(true);
+    setFollowThroughPreSelectedType('task');
+    setFollowThroughFormVisible(true);
+  };
+
+  const handleActivationComplete = async (createdTaskId: string, taskType: 'task' | 'event') => {
+    if (!depositIdea?.id) return;
+
+    try {
+      const supabase = getSupabaseClient();
+
+      // Update the deposit idea to mark it as activated
+      const { error: updateError } = await supabase
+        .from('0008-ap-deposit-ideas')
+        .update({
+          activated_task_id: createdTaskId,
+          activated_at: new Date().toISOString(),
+          is_active: false,
+        })
+        .eq('id', depositIdea.id);
+
+      if (updateError) {
+        console.error('Error updating deposit idea:', updateError);
+        Alert.alert('Error', 'Failed to mark deposit idea as activated');
+        return;
+      }
+
+      Alert.alert('Success', `Deposit idea activated as a ${taskType}!`);
+      onClose(); // Close the modal after successful activation
+    } catch (error) {
+      console.error('Error in activation:', error);
+      Alert.alert('Error', 'Failed to complete activation');
+    }
+  };
+
+  const handlePickAttachment = async () => {
+    try {
+      const result = await DocumentPicker.getDocumentAsync({
+        type: '*/*',
+        multiple: true,
+        copyToCacheDirectory: true,
+      });
+
+      if (!result.canceled && result.assets) {
+        const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB limit
+        const validFiles: any[] = [];
+        const oversizedFiles: string[] = [];
+
+        result.assets.forEach(asset => {
+          const fileSize = asset.size || 0;
+          const fileName = asset.name;
+
+          if (fileSize > MAX_FILE_SIZE) {
+            oversizedFiles.push(`${fileName} (${(fileSize / (1024 * 1024)).toFixed(2)} MB)`);
+          } else {
+            validFiles.push({
+              uri: asset.uri,
+              name: fileName,
+              type: asset.mimeType || 'application/octet-stream',
+              size: fileSize,
+            });
+          }
+        });
+
+        if (oversizedFiles.length > 0) {
+          Alert.alert(
+            'File Size Limit Exceeded',
+            `The following files exceed the 10 MB limit:\n\n${oversizedFiles.join('\n')}`
+          );
+        }
+
+        if (validFiles.length > 0) {
+          setNoteAttachments([...noteAttachments, ...validFiles]);
+        }
+      }
+    } catch (error) {
+      console.error('Error picking file:', error);
+      Alert.alert('Error', 'Failed to pick file');
+    }
+  };
+
+  const handleRemoveNoteAttachment = (index: number) => {
+    setNoteAttachments(noteAttachments.filter((_, i) => i !== index));
+  };
+
+  const uploadFileToStorage = async (file: any, userId: string): Promise<string | null> => {
+    try {
+      let fileData: any;
+      if (Platform.OS === 'web') {
+        const response = await fetch(file.uri);
+        fileData = await response.blob();
+      } else {
+        const response = await fetch(file.uri);
+        fileData = await response.blob();
+      }
+
+      const filePath = await uploadNoteAttachment(fileData, file.name, file.type, userId);
+      return filePath;
+    } catch (error) {
+      console.error('Error uploading file:', error);
+      return null;
+    }
+  };
+
+  const handleSaveNote = async () => {
+    if (!newNoteText.trim() || !depositIdea?.id) return;
+
+    setSavingNote(true);
+    try {
+      const supabase = getSupabaseClient();
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) throw new Error('User not found');
+
+      // Create the note
+      const { data: noteData, error: noteError } = await supabase
+        .from('0008-ap-notes')
+        .insert({
+          user_id: user.id,
+          content: newNoteText.trim(),
+        })
+        .select()
+        .single();
+
+      if (noteError) throw noteError;
+
+      // Link note to deposit idea
+      const { error: noteJoinError } = await supabase
+        .from('0008-ap-universal-notes-join')
+        .insert({
+          parent_id: depositIdea.id,
+          parent_type: 'depositIdea',
+          note_id: noteData.id,
+          user_id: user.id,
+        });
+
+      if (noteJoinError) throw noteJoinError;
+
+      // Upload attachments if any
+      if (noteAttachments.length > 0) {
+        const uploadPromises = noteAttachments.map(async (file) => {
+          const filePath = await uploadFileToStorage(file, user.id);
+          if (filePath) {
+            await saveNoteAttachmentMetadata(
+              noteData.id,
+              user.id,
+              file.name,
+              filePath,
+              file.type,
+              file.size
+            );
+          }
+        });
+
+        await Promise.all(uploadPromises);
+      }
+
+      // Refresh notes
+      await fetchNotes();
+
+      // Close modal and reset
+      setAddNoteModalVisible(false);
+      setNewNoteText('');
+      setNoteAttachments([]);
+
+      Alert.alert('Success', 'Note added successfully!');
+    } catch (error) {
+      console.error('Error saving note:', error);
+      Alert.alert('Error', 'Failed to save note');
+    } finally {
+      setSavingNote(false);
+    }
+  };
+
+  const handleFollowThroughPress = (type: 'task' | 'event' | 'rose' | 'thorn' | 'depositIdea' | 'reflection') => {
+    setFollowThroughPreSelectedType(type);
+    setFollowThroughFormVisible(true);
+  };
+
+  const formatDateTime = (dateString: string | null): string => {
+    if (!dateString) return '—';
+    const date = new Date(dateString);
+    if (isNaN(date.getTime())) return '—';
+
+    return date.toLocaleString('en-US', {
+      month: 'short',
+      day: 'numeric',
+      year: 'numeric',
+      hour: 'numeric',
+      minute: '2-digit',
+    });
+  };
+
+  if (!depositIdea) return null;
+
+  return (
+    <>
+      <Modal visible={visible && !followThroughFormVisible && !addNoteModalVisible} animationType="slide" presentationStyle="pageSheet">
+        <View style={styles.container}>
+          {/* Header */}
+          <View style={styles.header}>
+            <Text style={styles.headerTitle}>Deposit Idea</Text>
+            <View style={styles.headerActions}>
+              {!isEditMode && depositIdea.is_active && (
+                <TouchableOpacity
+                  onPress={handleActivate}
+                  style={styles.activateButton}
+                >
+                  <Play size={18} color="#fff" fill="#fff" />
+                  <Text style={styles.activateButtonText}>Activate</Text>
+                </TouchableOpacity>
+              )}
+              {!isEditMode && (
+                <TouchableOpacity
+                  onPress={() => setIsEditMode(true)}
+                  style={styles.headerButton}
+                >
+                  <Edit size={20} color="#3b82f6" />
+                </TouchableOpacity>
+              )}
+              <TouchableOpacity onPress={onClose} style={styles.headerButton}>
+                <X size={24} color="#1f2937" />
+              </TouchableOpacity>
+            </View>
+          </View>
+
+          <ScrollView style={styles.content}>
+            {/* Hero Section */}
+            <View style={styles.heroSection}>
+              <View style={styles.titleRow}>
+                <Image source={depositIdeaImage} style={styles.titleImage} resizeMode="contain" />
+                <View style={styles.titleContent}>
+                  <Text style={styles.title}>{depositIdea.title}</Text>
+                  <Text style={styles.subtitle}>Future Idea</Text>
+                </View>
+              </View>
+
+              {/* Status Badge */}
+              {!depositIdea.is_active && (
+                <View style={styles.statusBadge}>
+                  <Text style={styles.statusBadgeText}>✓ Activated</Text>
+                </View>
+              )}
+
+              {/* Alignment Chips - Roles, Domains, Key Relationships */}
+              {(roles.length > 0 || domains.length > 0 || keyRelationships.length > 0) && (
+                <View style={styles.alignmentChips}>
+                  {roles.map(role => (
+                    <View key={role.id} style={[styles.chip, { backgroundColor: role.color || '#e0e7ff' }]}>
+                      <Text style={styles.chipText}>{role.label}</Text>
+                    </View>
+                  ))}
+                  {domains.map(domain => (
+                    <View key={domain.id} style={[styles.chip, { backgroundColor: '#dbeafe' }]}>
+                      <Text style={styles.chipText}>{domain.name}</Text>
+                    </View>
+                  ))}
+                  {keyRelationships.map(kr => (
+                    <View key={kr.id} style={[styles.chip, { backgroundColor: '#fef3c7' }]}>
+                      <Text style={styles.chipText}>{kr.name}</Text>
+                    </View>
+                  ))}
+                </View>
+              )}
+
+              {/* Parent Info */}
+              {depositIdea.parent_id && depositIdea.parent_type && (
+                <View style={styles.parentInfoContainer}>
+                  <ParentItemInfo
+                    parentId={depositIdea.parent_id}
+                    parentType={depositIdea.parent_type as any}
+                    onPress={() => {
+                      if (onItemPress) {
+                        onItemPress({
+                          id: depositIdea.parent_id!,
+                          type: depositIdea.parent_type as any,
+                          title: '',
+                          date: '',
+                        });
+                      }
+                    }}
+                  />
+                </View>
+              )}
+            </View>
+
+            {/* Body - Notes */}
+            <View style={styles.bodySection}>
+              <View style={styles.sectionHeaderRow}>
+                <Text style={styles.sectionLabel}>Notes</Text>
+                <TouchableOpacity
+                  style={styles.addNoteButton}
+                  onPress={() => setAddNoteModalVisible(true)}
+                >
+                  <Text style={styles.addNoteButtonText}>+</Text>
+                </TouchableOpacity>
+              </View>
+              {loadingNotes ? (
+                <ActivityIndicator size="small" color="#f59e0b" />
+              ) : notes.length > 0 ? (
+                <View style={styles.notesContainer}>
+                  {notes.map(note => (
+                    <Autolink
+                      key={note.id}
+                      text={note.content}
+                      linkStyle={{ color: '#3b82f6', textDecorationLine: 'underline' }}
+                      onPress={(url) => Linking.openURL(url)}
+                      style={styles.noteText}
+                    />
+                  ))}
+                </View>
+              ) : (
+                <Text style={styles.emptyText}>No notes added</Text>
+              )}
+            </View>
+
+            {/* Attachments Gallery */}
+            {allAttachments.length > 0 && (
+              <View style={styles.bodySection}>
+                <Text style={styles.sectionLabel}>Attachments ({allAttachments.length})</Text>
+                <View style={styles.attachmentsGallery}>
+                  {allAttachments.map((file, idx) => {
+                    const isImage = file.file_type?.startsWith('image/');
+                    return (
+                      <TouchableOpacity
+                        key={idx}
+                        style={styles.attachmentItem}
+                        onPress={() => {
+                          if (isImage) {
+                            const imageAttachments = allAttachments.filter(f =>
+                              f.file_type?.startsWith('image/')
+                            );
+                            const imageIndex = imageAttachments.findIndex(img => img.id === file.id);
+                            setSelectedImages(imageAttachments);
+                            setSelectedImageIndex(imageIndex >= 0 ? imageIndex : 0);
+                            setImageViewerVisible(true);
+                          } else {
+                            Linking.openURL(file.public_url || file.uri);
+                          }
+                        }}
+                      >
+                        {isImage ? (
+                          <Image
+                            source={{ uri: file.public_url || file.uri }}
+                            style={styles.attachmentImage}
+                            resizeMode="cover"
+                          />
+                        ) : (
+                          <View style={styles.attachmentDocument}>
+                            <Text style={styles.attachmentDocText}>📄</Text>
+                            <Text style={styles.attachmentName} numberOfLines={1}>
+                              {file.file_name || file.name}
+                            </Text>
+                          </View>
+                        )}
+                      </TouchableOpacity>
+                    );
+                  })}
+                </View>
+              </View>
+            )}
+
+            {/* Follow Through Section */}
+            <View style={styles.followThroughSection}>
+              <Text style={styles.followThroughLabel}>Spark a Follow-Up Action:</Text>
+              <FollowThroughButtonBar
+                onPressTask={() => handleFollowThroughPress('task')}
+                onPressEvent={() => handleFollowThroughPress('event')}
+                onPressRose={() => handleFollowThroughPress('rose')}
+                onPressThorn={() => handleFollowThroughPress('thorn')}
+                onPressReflection={() => handleFollowThroughPress('reflection')}
+                onPressDepositIdea={() => handleFollowThroughPress('depositIdea')}
+              />
+            </View>
+
+            {/* Associated Items */}
+            {associatedItems.length > 0 && (
+              <View style={styles.bodySection}>
+                <Text style={styles.sectionLabel}>Follow-Through Items</Text>
+                <AssociatedItemsList
+                  items={associatedItems}
+                  onItemPress={onItemPress}
+                  loading={loadingAssociatedItems}
+                />
+              </View>
+            )}
+
+            {/* Footer - Metadata */}
+            <View style={styles.footerSection}>
+              <View style={styles.metadataGrid}>
+                <View style={styles.metadataItem}>
+                  <Text style={styles.metadataLabel}>Date Created</Text>
+                  <Text style={styles.metadataValue}>{formatDateTime(depositIdea.created_at || null)}</Text>
+                </View>
+                {depositIdea.activated_at && (
+                  <View style={styles.metadataItem}>
+                    <Text style={styles.metadataLabel}>Activated On</Text>
+                    <Text style={styles.metadataValue}>{formatDateTime(depositIdea.activated_at)}</Text>
+                  </View>
+                )}
+                {depositIdea.follow_up && (
+                  <View style={styles.metadataItem}>
+                    <Text style={styles.metadataLabel}>Follow-Up</Text>
+                    <Text style={styles.metadataValue}>Yes</Text>
+                  </View>
+                )}
+              </View>
+
+              {/* Delete Button */}
+              <TouchableOpacity onPress={handleDelete} style={styles.deleteButton}>
+                <Trash2 size={16} color="#dc2626" />
+                <Text style={styles.deleteText}>Delete Deposit Idea</Text>
+              </TouchableOpacity>
+            </View>
+          </ScrollView>
+        </View>
+      </Modal>
+
+      {/* Follow Through Form Modal */}
+      {followThroughFormVisible && (
+        <Modal visible={true} animationType="slide" presentationStyle="fullScreen">
+          <TaskEventForm
+            visible={true}
+            onClose={() => {
+              setFollowThroughFormVisible(false);
+              setIsActivating(false);
+              if (onRefreshAssociatedItems) {
+                onRefreshAssociatedItems();
+              }
+              loadAssociatedItems();
+            }}
+            initialType={followThroughPreSelectedType}
+            parentId={isActivating ? undefined : depositIdea.id}
+            parentType={isActivating ? undefined : "depositIdea"}
+            initialData={isActivating ? {
+              title: depositIdea.title,
+              notes: notes.map(n => n.content).join('\n\n'),
+              selectedRoleIds: roles.map(r => r.id),
+              selectedDomainIds: domains.map(d => d.id),
+              selectedKeyRelationshipIds: keyRelationships.map(kr => kr.id),
+              is_deposit_idea: true,
+            } : undefined}
+            onSubmitSuccess={async (createdTask?: any) => {
+              setFollowThroughFormVisible(false);
+
+              if (isActivating && createdTask?.id) {
+                // Complete the activation workflow
+                await handleActivationComplete(createdTask.id, createdTask.type || 'task');
+              }
+
+              setIsActivating(false);
+              if (onRefreshAssociatedItems) {
+                onRefreshAssociatedItems();
+              }
+              await loadAssociatedItems();
+              await fetchMetadata();
+            }}
+          />
+        </Modal>
+      )}
+
+      {/* Edit Form Modal */}
+      {isEditMode && depositIdea && (
+        <Modal visible={true} animationType="slide" presentationStyle="fullScreen">
+          <TaskEventForm
+            mode="edit"
+            initialData={{
+              ...depositIdea,
+              type: 'depositIdea',
+              roles: roles,
+              domains: domains,
+              goals: depositIdea.goals || [],
+              keyRelationships: keyRelationships,
+            }}
+            onClose={() => {
+              setIsEditMode(false);
+            }}
+            onSubmitSuccess={async () => {
+              setIsEditMode(false);
+              await fetchNotes();
+              await loadAssociatedItems();
+              await fetchMetadata();
+              onRefreshAssociatedItems?.();
+            }}
+          />
+        </Modal>
+      )}
+
+      {/* Add Note Modal */}
+      <Modal visible={addNoteModalVisible} transparent animationType="fade">
+        <View style={styles.noteModalOverlay}>
+          <View style={styles.noteModalContainer}>
+            <View style={styles.noteModalHeader}>
+              <Text style={styles.noteModalTitle}>Add Note</Text>
+              <TouchableOpacity onPress={() => {
+                setAddNoteModalVisible(false);
+                setNewNoteText('');
+                setNoteAttachments([]);
+              }}>
+                <X size={24} color="#1f2937" />
+              </TouchableOpacity>
+            </View>
+
+            <ScrollView style={styles.noteModalContent}>
+              <TextInput
+                style={styles.noteInput}
+                value={newNoteText}
+                onChangeText={setNewNoteText}
+                placeholder="Enter your note..."
+                placeholderTextColor="#9ca3af"
+                multiline
+                numberOfLines={4}
+                autoFocus
+              />
+
+              {/* Single Attachment Button */}
+              <View style={styles.attachmentButtonContainer}>
+                <TouchableOpacity
+                  style={styles.attachmentButton}
+                  onPress={handlePickAttachment}
+                >
+                  <Paperclip size={18} color="#f59e0b" />
+                  <Text style={styles.attachmentButtonText}>Add Attachment</Text>
+                </TouchableOpacity>
+              </View>
+
+              {/* Attachments Preview */}
+              {noteAttachments.length > 0 && (
+                <View style={styles.attachmentsPreview}>
+                  <Text style={styles.attachmentsLabel}>
+                    Attachments ({noteAttachments.length})
+                  </Text>
+                  {noteAttachments.map((file, index) => (
+                    <View key={index} style={styles.attachmentPreviewItem}>
+                      <Text style={styles.attachmentFileName} numberOfLines={1}>
+                        {file.name}
+                      </Text>
+                      <TouchableOpacity
+                        onPress={() => handleRemoveNoteAttachment(index)}
+                        style={styles.removeAttachmentButton}
+                      >
+                        <X size={16} color="#dc2626" />
+                      </TouchableOpacity>
+                    </View>
+                  ))}
+                </View>
+              )}
+            </ScrollView>
+
+            <View style={styles.noteModalFooter}>
+              <TouchableOpacity
+                style={[styles.noteModalButton, styles.noteCancelButton]}
+                onPress={() => {
+                  setAddNoteModalVisible(false);
+                  setNewNoteText('');
+                  setNoteAttachments([]);
+                }}
+              >
+                <Text style={styles.noteCancelButtonText}>Cancel</Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={[
+                  styles.noteModalButton,
+                  styles.noteSaveButton,
+                  (!newNoteText.trim() || savingNote) && styles.noteSaveButtonDisabled
+                ]}
+                onPress={handleSaveNote}
+                disabled={!newNoteText.trim() || savingNote}
+              >
+                {savingNote ? (
+                  <ActivityIndicator size="small" color="#ffffff" />
+                ) : (
+                  <Text style={styles.noteSaveButtonText}>Save Note</Text>
+                )}
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
+
+      {/* Image Viewer Modal */}
+      <ImageViewerModal
+        visible={imageViewerVisible}
+        images={selectedImages}
+        initialIndex={selectedImageIndex}
+        onClose={() => setImageViewerVisible(false)}
+      />
+    </>
+  );
+}
+
+const styles = StyleSheet.create({
+  container: {
+    flex: 1,
+    backgroundColor: '#fff',
+  },
+  header: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingHorizontal: 20,
+    paddingTop: 60,
+    paddingBottom: 16,
+    borderBottomWidth: 1,
+    borderBottomColor: '#e5e7eb',
+  },
+  headerTitle: {
+    fontSize: 18,
+    fontWeight: '600',
+    color: '#111827',
+  },
+  headerActions: {
+    flexDirection: 'row',
+    gap: 12,
+    alignItems: 'center',
+  },
+  activateButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    backgroundColor: '#10b981',
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    borderRadius: 8,
+  },
+  activateButtonText: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#fff',
+  },
+  headerButton: {
+    padding: 4,
+  },
+  content: {
+    flex: 1,
+  },
+  heroSection: {
+    padding: 20,
+    borderBottomWidth: 1,
+    borderBottomColor: '#f3f4f6',
+  },
+  titleRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    marginBottom: 8,
+  },
+  titleImage: {
+    width: 32,
+    height: 32,
+    marginRight: 12,
+    marginTop: 2,
+  },
+  titleContent: {
+    flex: 1,
+  },
+  title: {
+    fontSize: 24,
+    fontWeight: 'bold',
+    color: '#111827',
+    lineHeight: 32,
+    marginBottom: 4,
+  },
+  subtitle: {
+    fontSize: 14,
+    color: '#6b7280',
+    fontWeight: '500',
+  },
+  statusBadge: {
+    alignSelf: 'flex-start',
+    backgroundColor: '#d1fae5',
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 12,
+    marginTop: 8,
+  },
+  statusBadgeText: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: '#065f46',
+  },
+  alignmentChips: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+    marginTop: 12,
+  },
+  chip: {
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 16,
+  },
+  chipText: {
+    fontSize: 14,
+    fontWeight: '500',
+    color: '#1f2937',
+  },
+  parentInfoContainer: {
+    marginTop: 12,
+  },
+  bodySection: {
+    padding: 20,
+    borderBottomWidth: 1,
+    borderBottomColor: '#f3f4f6',
+  },
+  sectionLabel: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#374151',
+    marginBottom: 12,
+  },
+  notesContainer: {
+    gap: 12,
+  },
+  noteText: {
+    fontSize: 15,
+    lineHeight: 22,
+    color: '#1f2937',
+  },
+  emptyText: {
+    fontSize: 14,
+    color: '#9ca3af',
+    fontStyle: 'italic',
+  },
+  attachmentsGallery: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 12,
+  },
+  attachmentItem: {
+    width: 100,
+    height: 100,
+    borderRadius: 8,
+    overflow: 'hidden',
+  },
+  attachmentImage: {
+    width: '100%',
+    height: '100%',
+  },
+  attachmentDocument: {
+    width: '100%',
+    height: '100%',
+    backgroundColor: '#f3f4f6',
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 8,
+  },
+  attachmentDocText: {
+    fontSize: 32,
+  },
+  attachmentName: {
+    fontSize: 10,
+    color: '#6b7280',
+    marginTop: 4,
+    textAlign: 'center',
+  },
+  followThroughSection: {
+    padding: 20,
+    borderBottomWidth: 1,
+    borderBottomColor: '#f3f4f6',
+  },
+  followThroughLabel: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#374151',
+    marginBottom: 16,
+  },
+  footerSection: {
+    padding: 20,
+    backgroundColor: '#fafafa',
+  },
+  metadataGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 16,
+    marginBottom: 20,
+  },
+  metadataItem: {
+    width: '48%',
+  },
+  metadataLabel: {
+    fontSize: 12,
+    color: '#9ca3af',
+    marginBottom: 4,
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+  },
+  metadataValue: {
+    fontSize: 14,
+    color: '#4b5563',
+  },
+  deleteButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    paddingVertical: 12,
+    marginTop: 8,
+  },
+  deleteText: {
+    fontSize: 14,
+    color: '#dc2626',
+    fontWeight: '500',
+  },
+  sectionHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 12,
+  },
+  addNoteButton: {
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    backgroundColor: '#f59e0b',
+    alignItems: 'center',
+    justifyContent: 'center',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.2,
+    shadowRadius: 2,
+    elevation: 2,
+  },
+  addNoteButtonText: {
+    color: '#ffffff',
+    fontSize: 18,
+    fontWeight: '600',
+    lineHeight: 20,
+  },
+  noteModalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0, 0, 0, 0.5)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 20,
+  },
+  noteModalContainer: {
+    width: '100%',
+    maxWidth: 400,
+    backgroundColor: '#ffffff',
+    borderRadius: 12,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.25,
+    shadowRadius: 8,
+    elevation: 8,
+  },
+  noteModalHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    padding: 20,
+    borderBottomWidth: 1,
+    borderBottomColor: '#e5e7eb',
+  },
+  noteModalTitle: {
+    fontSize: 18,
+    fontWeight: '600',
+    color: '#111827',
+  },
+  noteModalContent: {
+    maxHeight: 400,
+  },
+  noteInput: {
+    padding: 20,
+    fontSize: 16,
+    color: '#1f2937',
+    minHeight: 120,
+    textAlignVertical: 'top',
+    borderBottomWidth: 1,
+    borderBottomColor: '#e5e7eb',
+  },
+  attachmentButtonContainer: {
+    paddingHorizontal: 20,
+    paddingBottom: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: '#e5e7eb',
+  },
+  attachmentButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    paddingVertical: 10,
+    paddingHorizontal: 16,
+    backgroundColor: '#fef3c7',
+    borderRadius: 6,
+    borderWidth: 1,
+    borderColor: '#fcd34d',
+  },
+  attachmentButtonText: {
+    fontSize: 14,
+    color: '#f59e0b',
+    fontWeight: '500',
+  },
+  attachmentsPreview: {
+    padding: 20,
+    gap: 8,
+  },
+  attachmentsLabel: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: '#6b7280',
+    marginBottom: 8,
+  },
+  attachmentPreviewItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    padding: 12,
+    backgroundColor: '#f9fafb',
+    borderRadius: 6,
+    borderWidth: 1,
+    borderColor: '#e5e7eb',
+  },
+  attachmentFileName: {
+    flex: 1,
+    fontSize: 14,
+    color: '#1f2937',
+    marginRight: 8,
+  },
+  removeAttachmentButton: {
+    padding: 4,
+  },
+  noteModalFooter: {
+    flexDirection: 'row',
+    justifyContent: 'flex-end',
+    gap: 12,
+    padding: 20,
+  },
+  noteModalButton: {
+    paddingVertical: 10,
+    paddingHorizontal: 20,
+    borderRadius: 6,
+    minWidth: 100,
+    alignItems: 'center',
+  },
+  noteCancelButton: {
+    backgroundColor: '#f3f4f6',
+  },
+  noteCancelButtonText: {
+    color: '#374151',
+    fontSize: 14,
+    fontWeight: '600',
+  },
+  noteSaveButton: {
+    backgroundColor: '#f59e0b',
+  },
+  noteSaveButtonDisabled: {
+    backgroundColor: '#9ca3af',
+  },
+  noteSaveButtonText: {
+    color: '#ffffff',
+    fontSize: 14,
+    fontWeight: '600',
+  },
+});
